@@ -1,5 +1,6 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { Mic, ChevronLeft, Globe, Copy, Download, Settings, Play, Pause, QrCode, Check, X, Video, Users, MessageSquare, FileText, AlertTriangle, MicOff, VideoOff } from 'lucide-react';
+// ConferenceBroadcastScreen.jsx (modifié)
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { Mic, ChevronLeft, Globe, Copy, Download, Settings, Play, Pause, QrCode, Check, X, Video, Users, MessageSquare, FileText, AlertTriangle, MicOff, VideoOff, Save } from 'lucide-react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { QRCodeCanvas } from 'qrcode.react';
@@ -17,7 +18,6 @@ const ConferenceBroadcastScreen = () => {
   const [audioLevel, setAudioLevel] = useState(0);
   const [showSettings, setShowSettings] = useState(false);
   const [micAccess, setMicAccess] = useState(false);
-  const [micEnabled, setMicEnabled] = useState(true); // État pour le micro activé/désactivé
   const [cameraAccess, setCameraAccess] = useState(false);
   const [videoEnabled, setVideoEnabled] = useState(false);
   const [streamStartTime, setStreamStartTime] = useState(null);
@@ -41,6 +41,15 @@ const ConferenceBroadcastScreen = () => {
   });
   const [showEndConfirmation, setShowEndConfirmation] = useState(false);
   const [stoppingConference, setStoppingConference] = useState(false);
+  const [micMuted, setMicMuted] = useState(false);
+  const [cameraPaused, setCameraPaused] = useState(false);
+  
+  // État pour l'enregistrement de la conférence
+  const [recordConference, setRecordConference] = useState(false);
+  const [showRecordModal, setShowRecordModal] = useState(false);
+  const [pin, setPin] = useState('');
+  const [email, setEmail] = useState('');
+  const [pinError, setPinError] = useState('');
   
   // États et refs WebRTC
   const [peerConnections, setPeerConnections] = useState({});
@@ -235,14 +244,13 @@ const ConferenceBroadcastScreen = () => {
       
       visualizeAudio();
       setMicAccess(true);
-      setMicEnabled(true);
+      setMicMuted(false);
       return true;
       
     } catch (error) {
       console.error("Erreur lors de l'accès au microphone:", error);
       alert("Impossible d'accéder au microphone. Veuillez vérifier les permissions.");
       setMicAccess(false);
-      setMicEnabled(false);
       return false;
     }
   };
@@ -336,11 +344,8 @@ const ConferenceBroadcastScreen = () => {
       
       setCameraAccess(true);
       setVideoEnabled(true);
+      setCameraPaused(false);
       console.log("🟢 Caméra activée avec succès");
-      
-      // Notifier les participants du changement d'état de la caméra
-      notifyDeviceStateChange('video', true);
-      
       return true;
       
     } catch (error) {
@@ -348,11 +353,6 @@ const ConferenceBroadcastScreen = () => {
       console.error("❌ Détails:", error.message);
       alert("Impossible d'accéder à la caméra. Veuillez vérifier les permissions.");
       setCameraAccess(false);
-      setVideoEnabled(false);
-      
-      // Notifier les participants du changement d'état de la caméra
-      notifyDeviceStateChange('video', false);
-      
       return false;
     }
   };
@@ -376,54 +376,6 @@ const ConferenceBroadcastScreen = () => {
     
     setMicAccess(false);
     setAudioLevel(0);
-    setMicEnabled(false);
-    
-    // Notifier les participants du changement d'état du microphone
-    notifyDeviceStateChange('audio', false);
-  };
-  
-  // Fonction pour basculer l'état du microphone
-  const toggleMicrophone = () => {
-    if (!micAccess) {
-      if (isBroadcasting) {
-        startMicrophone();
-      } else {
-        alert("Veuillez d'abord démarrer la diffusion.");
-      }
-      return;
-    }
-    
-    if (micStreamRef.current) {
-      const audioTracks = micStreamRef.current.getAudioTracks();
-      if (audioTracks.length > 0) {
-        const enabled = !micEnabled;
-        audioTracks.forEach(track => {
-          track.enabled = enabled;
-        });
-        setMicEnabled(enabled);
-        
-        // Notifier les participants du changement d'état du microphone
-        notifyDeviceStateChange('audio', enabled);
-      }
-    }
-  };
-  
-  // Notifier les participants des changements d'état des périphériques
-  const notifyDeviceStateChange = (deviceType, enabled) => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      try {
-        wsRef.current.send(JSON.stringify({
-          type: 'device_state_change',
-          data: {
-            deviceType,
-            enabled
-          }
-        }));
-        console.log(`🔵 Notification du changement d'état du périphérique ${deviceType} (${enabled ? 'activé' : 'désactivé'}) envoyée`);
-      } catch (e) {
-        console.error(`❌ Erreur lors de la notification du changement d'état du périphérique ${deviceType}:`, e);
-      }
-    }
   };
   
   // Arrêter la caméra
@@ -435,15 +387,99 @@ const ConferenceBroadcastScreen = () => {
     
     setCameraAccess(false);
     setVideoEnabled(false);
-    
-    // Notifier les participants du changement d'état de la caméra
-    notifyDeviceStateChange('video', false);
+    setCameraPaused(false);
+  };
+  
+  // Basculer l'état du microphone (muet/non muet)
+  const toggleMicrophone = () => {
+    if (micStreamRef.current) {
+      const audioTracks = micStreamRef.current.getAudioTracks();
+      if (audioTracks.length > 0) {
+        const enabled = !audioTracks[0].enabled;
+        audioTracks[0].enabled = enabled;
+        setMicMuted(!enabled);
+        
+        // Notifier tous les participants du changement
+        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+          wsRef.current.send(JSON.stringify({
+            type: 'track_status_change',
+            data: {
+              kind: 'audio',
+              enabled: enabled
+            }
+          }));
+          console.log(`🔵 Notification de changement d'état audio envoyée à tous: ${enabled ? 'activé' : 'désactivé'}`);
+        }
+      }
+    }
+  };
+  
+  // Basculer l'état de la caméra (activée/désactivée)
+  const toggleCamera = () => {
+    if (videoStreamRef.current) {
+      const videoTracks = videoStreamRef.current.getVideoTracks();
+      if (videoTracks.length > 0) {
+        const enabled = !videoTracks[0].enabled;
+        videoTracks[0].enabled = enabled;
+        setCameraPaused(!enabled);
+        
+        // Notifier tous les participants du changement
+        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+          wsRef.current.send(JSON.stringify({
+            type: 'track_status_change',
+            data: {
+              kind: 'video',
+              enabled: enabled
+            }
+          }));
+          console.log(`🔵 Notification de changement d'état vidéo envoyée à tous: ${enabled ? 'activé' : 'désactivé'}`);
+        }
+      }
+    }
+  };
+  
+  // Notifier les participants du changement d'état des pistes
+  const sendTrackStatusToParticipant = (participantId) => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      // Envoyer l'état de la piste audio
+      if (micStreamRef.current) {
+        const audioTracks = micStreamRef.current.getAudioTracks();
+        if (audioTracks.length > 0) {
+          wsRef.current.send(JSON.stringify({
+            type: 'track_status_change',
+            data: {
+              kind: 'audio',
+              enabled: audioTracks[0].enabled,
+              target_id: participantId
+            }
+          }));
+          console.log(`🔵 État de piste audio envoyé à ${participantId}: ${audioTracks[0].enabled ? 'activé' : 'désactivé'}`);
+        }
+      }
+      
+      // Envoyer l'état de la piste vidéo
+      if (videoStreamRef.current) {
+        const videoTracks = videoStreamRef.current.getVideoTracks();
+        if (videoTracks.length > 0) {
+          wsRef.current.send(JSON.stringify({
+            type: 'track_status_change',
+            data: {
+              kind: 'video',
+              enabled: videoTracks[0].enabled,
+              target_id: participantId
+            }
+          }));
+          console.log(`🔵 État de piste vidéo envoyé à ${participantId}: ${videoTracks[0].enabled ? 'activé' : 'désactivé'}`);
+        }
+      }
+    }
   };
   
   // Basculer la caméra
   const toggleVideo = async () => {
     if (videoEnabled) {
-      stopCamera();
+      setCameraPaused(!cameraPaused);
+      toggleCamera();
     } else {
       if (isBroadcasting) {
         await startCamera();
@@ -453,9 +489,10 @@ const ConferenceBroadcastScreen = () => {
     }
   };
   
-  const createOffer = async () => {
+  // Créer une offre WebRTC pour un participant spécifique
+  const createOfferForParticipant = async (participantId) => {
     try {
-      console.log("🔵 Création d'une offre WebRTC...");
+      console.log(`🔵 Création d'une offre WebRTC pour le participant ${participantId}...`);
       
       // S'assurer que nous avons accès au microphone et à la caméra 
       if (!micStreamRef.current) {
@@ -467,6 +504,26 @@ const ConferenceBroadcastScreen = () => {
         console.log("🔵 Démarrage de la caméra");
         await startCamera();
       }
+      
+      // Vérifier si une connexion existe déjà pour ce participant
+      if (peerConnectionsRef.current[participantId]) {
+        console.log(`🔵 Fermeture de la connexion existante pour ${participantId}`);
+        peerConnectionsRef.current[participantId].close();
+        delete peerConnectionsRef.current[participantId];
+      }
+      
+      // Créer une nouvelle connexion pour ce participant
+      console.log(`🔵 Création d'une nouvelle RTCPeerConnection pour ${participantId}`);
+      const peerConnection = new RTCPeerConnection(rtcConfig);
+      
+      // Configurer les événements pour surveiller l'état de la connexion
+      peerConnection.onconnectionstatechange = () => {
+        console.log(`🔵 État de connexion WebRTC pour ${participantId}:`, peerConnection.connectionState);
+      };
+      
+      peerConnection.oniceconnectionstatechange = () => {
+        console.log(`🔵 État de connexion ICE pour ${participantId}:`, peerConnection.iceConnectionState);
+      };
       
       // Combiner les flux audio et vidéo
       const mediaStream = new MediaStream();
@@ -491,127 +548,32 @@ const ConferenceBroadcastScreen = () => {
           console.log(`🔵 Piste vidéo ajoutée: ${track.id}`);
         });
       }
-  
+
       console.log("🔵 Nombre total de pistes dans le flux:", mediaStream.getTracks().length);
-      
-      // Créer un MediaRecorder pour enregistrer le flux
-      try {
-        console.log("🔵 Tentative de création du MediaRecorder avec codec vp9");
-        const options = { mimeType: 'video/webm;codecs=vp9,opus' };
-        mediaRecorderRef.current = new MediaRecorder(mediaStream, options);
-        console.log("🔵 MediaRecorder créé avec succès (vp9)");
-      } catch (e) {
-        console.error('❌ MediaRecorder error:', e);
-        try {
-          // Fallback options
-          console.log("🔵 Tentative de fallback sur format webm standard");
-          const options = { mimeType: 'video/webm' };
-          mediaRecorderRef.current = new MediaRecorder(mediaStream, options);
-          console.log("🔵 MediaRecorder créé avec succès (webm standard)");
-        } catch (e2) {
-          console.error('❌ MediaRecorder fallback error:', e2);
-          alert("Votre navigateur ne prend pas en charge l'enregistrement vidéo nécessaire.");
-          return;
-        }
-      }
-      
-      // Configurer l'enregistrement pour permettre la navigation temporelle
-      mediaRecorderRef.current.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          console.log(`🔵 Segment média reçu, taille: ${event.data.size} octets`);
-          recordedChunksRef.current.push(event.data);
-          
-          // Créer un objet URL pour le chunk et l'ajouter au buffer
-          const blob = new Blob([event.data], { type: 'video/webm' });
-          const url = URL.createObjectURL(blob);
-          const timestamp = Date.now();
-          
-          mediaBufferRef.current.push({
-            url,
-            timestamp,
-            blob, // Stocker le blob pour permettre le téléchargement par les participants
-            duration: 1000 // Durée de 1 seconde par segment
-          });
-          console.log(`🔵 Segment ajouté au buffer, total: ${mediaBufferRef.current.length}`);
-          
-          // Limiter la taille du buffer (15 minutes)
-          if (mediaBufferRef.current.length > 900) {
-            const oldestSegment = mediaBufferRef.current.shift();
-            URL.revokeObjectURL(oldestSegment.url);
-            console.log("🔵 Ancien segment supprimé du buffer");
-          }
-          
-          // Diffuser le blob via WebSocket
-          if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-            try {
-              wsRef.current.send(JSON.stringify({
-                type: 'media_chunk',
-                data: {
-                  timestamp,
-                  duration: 1000,
-                  // Pour un cas réel, on pourrait utiliser un service de stockage temporaire
-                  chunk_id: `chunk-${timestamp}`
-                }
-              }));
-              console.log("🔵 Info du segment média envoyée via WebSocket");
-            } catch (e) {
-              console.error("❌ Erreur lors de l'envoi du segment média:", e);
-            }
-          }
-        }
-      };
-      
-      // Démarrer l'enregistrement
-      console.log("🔵 Démarrage de l'enregistrement");
-      mediaRecorderRef.current.start(1000); // Enregistrer par segments de 1 seconde
-      setRecording(true);
-      
-      // Créer une source MediaSource pour la diffusion
-      mediaSourceRef.current = new MediaSource();
-      const mediaSourceUrl = URL.createObjectURL(mediaSourceRef.current);
-      console.log("🔵 MediaSource créée:", mediaSourceUrl);
-      
-      // Créer une connexion RTC pour chaque nouveau participant
-      console.log("🔵 Création de la RTCPeerConnection avec config:", rtcConfig);
-      const peerConnection = new RTCPeerConnection(rtcConfig);
-      
-      // Configurer les événements pour surveiller l'état de la connexion
-      peerConnection.onconnectionstatechange = () => {
-        console.log("🔵 État de connexion WebRTC:", peerConnection.connectionState);
-      };
-      
-      peerConnection.oniceconnectionstatechange = () => {
-        console.log("🔵 État de connexion ICE:", peerConnection.iceConnectionState);
-      };
       
       // Ajouter les pistes au peer connection
       mediaStream.getTracks().forEach(track => {
-        console.log(`🔵 Ajout de la piste ${track.kind} à RTCPeerConnection`);
-        const sender = peerConnection.addTrack(track, mediaStream);
-        console.log(`🔵 Piste ${track.kind} ajoutée avec succès, ID sender: ${sender.id}`);
-        
-        // Configurer les écouteurs d'état de piste
-        track.onmute = () => console.log(`⚠️ Piste ${track.kind} muette`);
-        track.onunmute = () => console.log(`🟢 Piste ${track.kind} non muette`);
-        track.onended = () => console.log(`⚠️ Piste ${track.kind} terminée`);
+        console.log(`🔵 Ajout de la piste ${track.kind} à RTCPeerConnection pour ${participantId}`);
+        peerConnection.addTrack(track, mediaStream);
       });
       
       // Écouter les candidats ICE
       peerConnection.onicecandidate = async (event) => {
         if (event.candidate) {
-          console.log("🔵 Candidat ICE généré:", event.candidate);
+          console.log(`🔵 Candidat ICE généré pour ${participantId}:`, event.candidate);
           
           try {
-            // Envoyer les candidats via WebSocket pour tous les participants
+            // Envoyer les candidats via WebSocket à ce participant spécifique
             if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
               wsRef.current.send(JSON.stringify({
                 type: 'ice_candidate',
                 data: {
                   sender_id: 'presenter',
-                  candidate: event.candidate.toJSON()
+                  candidate: event.candidate.toJSON(),
+                  target_id: participantId
                 }
               }));
-              console.log("🔵 Candidat ICE envoyé via WebSocket");
+              console.log(`🔵 Candidat ICE envoyé à ${participantId}`);
             } else {
               console.warn("⚠️ WebSocket non disponible pour envoyer le candidat ICE");
             }
@@ -622,19 +584,19 @@ const ConferenceBroadcastScreen = () => {
       };
       
       // Créer une offre SDP
-      console.log("🔵 Création de l'offre WebRTC");
+      console.log(`🔵 Création de l'offre WebRTC pour ${participantId}`);
       const offer = await peerConnection.createOffer({
         offerToReceiveAudio: true,
         offerToReceiveVideo: videoEnabled
       });
-      console.log("🔵 Offre SDP créée:", offer);
+      console.log(`🔵 Offre SDP créée pour ${participantId}:`, offer);
       
       // Définir l'offre locale
-      console.log("🔵 Application de l'offre comme description locale");
+      console.log(`🔵 Application de l'offre comme description locale pour ${participantId}`);
       await peerConnection.setLocalDescription(offer);
-      console.log("🔵 Description locale appliquée avec succès");
+      console.log(`🔵 Description locale appliquée avec succès pour ${participantId}`);
       
-      // Envoyer l'offre via WebSocket pour tous les participants
+      // Envoyer l'offre via WebSocket pour ce participant
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
         wsRef.current.send(JSON.stringify({
           type: 'webrtc_offer',
@@ -642,30 +604,29 @@ const ConferenceBroadcastScreen = () => {
             type: offer.type,
             sdp: offer.sdp,
             sender_id: 'presenter',
-            hasVideo: videoEnabled,
-            hasAudio: micEnabled
+            target_id: participantId
           }
         }));
-        console.log("🔵 Offre WebRTC envoyée via WebSocket avec ID");
+        console.log(`🔵 Offre WebRTC envoyée via WebSocket à ${participantId}`);
+        
+        // Envoyer l'état actuel des pistes à ce participant
+        sendTrackStatusToParticipant(participantId);
       } else {
         console.warn("⚠️ WebSocket non disponible pour envoyer l'offre");
       }
       
       // Stocker la connexion
-      peerConnectionsRef.current['broadcast'] = peerConnection;
-      setPeerConnections(prev => ({ ...prev, 'broadcast': peerConnection }));
+      peerConnectionsRef.current[participantId] = peerConnection;
+      setPeerConnections(prev => ({ ...prev, [participantId]: peerConnection }));
       
-      console.log("🟢 Offre WebRTC créée et envoyée avec succès");
-      
-      // Envoyer l'état initial des périphériques aux participants
-      notifyDeviceStateChange('audio', micEnabled);
-      notifyDeviceStateChange('video', videoEnabled);
+      console.log(`🟢 Offre WebRTC créée et envoyée avec succès à ${participantId}`);
+      return true;
       
     } catch (error) {
-      console.error("❌ Erreur lors de la création de l'offre WebRTC:", error);
+      console.error(`❌ Erreur lors de la création de l'offre WebRTC pour ${participantId}:`, error);
       console.error("❌ Détails de l'erreur:", error.message);
       console.error("❌ Stack trace:", error.stack);
-      alert("Erreur lors de l'initialisation du streaming. Veuillez réessayer.");
+      return false;
     }
   };
   
@@ -703,28 +664,6 @@ const ConferenceBroadcastScreen = () => {
               console.log("Connexion WebSocket établie avec succès");
               setIsBroadcasting(true);
               setStreamStartTime(new Date());
-              console.log("🔴 Envoi d'une offre WebRTC test dans 2 secondes...");
-              setTimeout(() => {
-                if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-                  wsRef.current.send(JSON.stringify({
-                    type: 'webrtc_offer',
-                    data: {
-                      type: 'offer',
-                      sdp: 'v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0\r\na=msid-semantic: WMS\r\nm=application 9 UDP/TLS/RTP/SAVPF 0\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:test\r\na=ice-pwd:test123\r\na=fingerprint:sha-256 00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00\r\na=setup:actpass\r\na=mid:0\r\n',
-                      sender_id: 'presenter',
-                      hasVideo: videoEnabled,
-                      hasAudio: micEnabled
-                    }
-                  }));
-                  console.log("🔴 Offre WebRTC test envoyée");
-                }
-              }, 2000);
-              
-              // Créer et envoyer l'offre WebRTC après la connexion réussie
-              console.log("🔵 Attente courte avant création de l'offre WebRTC...");
-              setTimeout(() => {
-                createOffer();
-              }, 500); // Un court délai de 500ms pour s'assurer que tout est prêt
               break;
               
             case 'webrtc_answer':
@@ -733,14 +672,18 @@ const ConferenceBroadcastScreen = () => {
                 const { sender_id, type, sdp } = message.data;
                 const answerDescription = new RTCSessionDescription({ type, sdp });
                 
-                if (peerConnectionsRef.current['broadcast']) {
+                // Utiliser la connexion spécifique à ce participant
+                if (peerConnectionsRef.current[sender_id]) {
                   try {
                     console.log(`🔵 Réception de la réponse depuis ${sender_id}, application...`);
-                    await peerConnectionsRef.current['broadcast'].setRemoteDescription(answerDescription);
+                    await peerConnectionsRef.current[sender_id].setRemoteDescription(answerDescription);
                     console.log(`🟢 Réponse WebRTC acceptée de ${sender_id}`);
                   } catch (e) {
-                    console.error("❌ Erreur lors de l'application de la réponse WebRTC:", e);
+                    console.error(`❌ Erreur lors de l'application de la réponse WebRTC de ${sender_id}:`, e);
                   }
+                } else {
+                  console.warn(`⚠️ Pas de connexion établie pour ${sender_id}, création d'une nouvelle offre...`);
+                  createOfferForParticipant(sender_id);
                 }
               }
               break;
@@ -750,14 +693,18 @@ const ConferenceBroadcastScreen = () => {
               if (message.data && message.data.sender_id !== 'presenter') {
                 const { sender_id, candidate } = message.data;
                 
-                if (peerConnectionsRef.current['broadcast']) {
+                // Utiliser la connexion spécifique à ce participant
+                if (peerConnectionsRef.current[sender_id]) {
                   try {
-                    await peerConnectionsRef.current['broadcast'].addIceCandidate(
+                    await peerConnectionsRef.current[sender_id].addIceCandidate(
                       new RTCIceCandidate(candidate)
                     );
+                    console.log(`🔵 Candidat ICE ajouté pour ${sender_id}`);
                   } catch (e) {
-                    console.error("Erreur lors de l'ajout d'un candidat ICE:", e);
+                    console.error(`❌ Erreur lors de l'ajout d'un candidat ICE pour ${sender_id}:`, e);
                   }
+                } else {
+                  console.warn(`⚠️ Pas de connexion établie pour le candidat ICE de ${sender_id}`);
                 }
               }
               break;
@@ -795,30 +742,12 @@ const ConferenceBroadcastScreen = () => {
                 
                 setParticipants(prev => prev + 1);
                 
-                // Envoyer l'offre WebRTC actuelle au nouveau participant
-                if (peerConnectionsRef.current['broadcast'] && 
-                    peerConnectionsRef.current['broadcast'].localDescription) {
-                  try {
-                    ws.send(JSON.stringify({
-                      type: 'webrtc_offer',
-                      data: {
-                        type: peerConnectionsRef.current['broadcast'].localDescription.type,
-                        sdp: peerConnectionsRef.current['broadcast'].localDescription.sdp,
-                        target_id: message.data.participant_id,
-                        hasVideo: videoEnabled,
-                        hasAudio: micEnabled
-                      }
-                    }));
-                    
-                    // Envoyer l'état actuel des périphériques
-                    setTimeout(() => {
-                      notifyDeviceStateChange('video', videoEnabled);
-                      notifyDeviceStateChange('audio', micEnabled);
-                    }, 1000);
-                  } catch (e) {
-                    console.error("Erreur lors de l'envoi de l'offre au nouveau participant:", e);
-                  }
-                }
+                // Créer une nouvelle offre spécifique pour ce participant
+                const newParticipantId = message.data.participant_id;
+                console.log(`🔵 Nouveau participant détecté: ${newParticipantId}, création d'une offre...`);
+                setTimeout(() => {
+                  createOfferForParticipant(newParticipantId);
+                }, 1000); // Court délai pour s'assurer que le participant est prêt
               }
               break;
               
@@ -829,34 +758,27 @@ const ConferenceBroadcastScreen = () => {
                 setParticipants(prev => prev - 1);
               }
               break;
-              
-            case 'request_media_segment':
-              // Traiter les demandes de segments média pour la navigation temporelle
-              if (message.data) {
-                const { participant_id, timestamp, index } = message.data;
-                // Trouver le segment approprié
-                const segment = mediaBufferRef.current.find(seg => seg.timestamp === timestamp || seg.index === index);
+            case 'request_new_offer':
+              // Un participant demande une nouvelle offre
+              if (message.data && message.data.target_id) {
+                const targetId = message.data.target_id;
+                console.log(`🔵 Demande d'offre pour le participant ${targetId}`);
                 
-                if (segment && segment.blob) {
-                  // En production, nous utiliserions un service pour le transfert des gros fichiers
-                  // Ici, nous simulons l'envoi du segment
-                  console.log(`🔵 Demande de segment média: ${timestamp}, index: ${index}`);
-                  
-                  ws.send(JSON.stringify({
-                    type: 'media_segment_available',
-                    data: {
-                      target_id: participant_id,
-                      timestamp: segment.timestamp,
-                      index: segment.index || mediaBufferRef.current.indexOf(segment),
-                      // URL à utiliser pour télécharger le segment
-                      download_url: `${API_BASE_URL}/segments/${conferenceId}/${segment.timestamp}`
-                    }
-                  }));
-                } else {
-                  console.log(`⚠️ Segment non trouvé: ${timestamp}, index: ${index}`);
-                }
+                // Créer une nouvelle offre pour ce participant
+                createOfferForParticipant(targetId);
               }
               break;
+            
+            case 'send_track_status':
+              // Un participant demande l'état actuel des pistes
+              if (message.data && message.data.target_id) {
+                const targetId = message.data.target_id;
+                console.log(`🔵 Demande d'état des pistes pour le participant ${targetId}`);
+                
+                // Envoyer l'état actuel des pistes à ce participant
+                sendTrackStatusToParticipant(targetId);
+              }
+              break;  
           }
         };
         
@@ -871,6 +793,9 @@ const ConferenceBroadcastScreen = () => {
           await startCamera();
         }
         
+        // Vérifier si l'utilisateur veut enregistrer la conférence
+        setShowRecordModal(true);
+        
       } else {
         alert("Échec du démarrage de la conférence. La réponse du serveur n'est pas valide.");
       }
@@ -880,61 +805,267 @@ const ConferenceBroadcastScreen = () => {
     }
   };
   
-  // Arrêter la diffusion
-  const stopBroadcasting = async () => {
-    setStoppingConference(true);
+  // Valider le code PIN
+  const validatePin = () => {
+    // Le PIN doit être un nombre de 4 à 6 chiffres
+    if (!/^\d{4,6}$/.test(pin)) {
+      setPinError("Le code PIN doit contenir entre 4 et 6 chiffres");
+      return false;
+    }
     
+    setPinError("");
+    return true;
+  };
+  
+  // Fonction pour enregistrer les détails de l'enregistrement
+  const saveRecordingDetails = async () => {
     try {
-      // Arrêter l'enregistrement
-      if (mediaRecorderRef.current && recording) {
-        mediaRecorderRef.current.stop();
-        setRecording(false);
-      }
-      
-      // Fermer les connexions WebRTC
-      Object.values(peerConnectionsRef.current).forEach(connection => {
-        if (connection) {
-          connection.close();
+      if (recordConference) {
+        if (!validatePin()) {
+          return;
         }
-      });
-      
-      // Vider les références
-      peerConnectionsRef.current = {};
-      setPeerConnections({});
-      
-      // Arrêter la conférence sur le serveur
-      if (conferenceId) {
-        await axios.post(`${API_BASE_URL}/conferences/${conferenceId}/stop`);
+        
+        console.log("🔵 Démarrage de l'enregistrement avec PIN:", pin);
+        
+        // Démarrer l'enregistrement réel du média
+        const recordingStarted = startRecording();
+        
+        if (!recordingStarted) {
+          console.warn("⚠️ L'enregistrement n'a pas pu démarrer, mais les métadonnées seront enregistrées");
+        }
+        
+        // Envoyer les informations d'authentification au serveur
+        const response = await axios.post(`${API_BASE_URL}/recordings`, {
+          conferenceId,
+          pin,
+          email: email || null,
+          title,
+          sourceLanguage,
+          targetLanguages,
+          hasVideo: videoEnabled
+        });
+        
+        console.log("🔵 Réponse du serveur pour l'enregistrement:", response.data);
+        
+        if (response.data.success) {
+          console.log("🟢 Configuration de l'enregistrement réussie");
+        } else {
+          console.error("❌ Erreur lors de la configuration:", response.data.error);
+          alert(`Erreur: ${response.data.error || "Erreur inconnue"}`);
+        }
       }
       
-      if (wsRef.current) {
-        wsRef.current.close();
-        wsRef.current = null;
-      }
+      setShowRecordModal(false);
       
-      stopMicrophone();
-      stopCamera();
-      setIsBroadcasting(false);
-      setStoppingConference(false);
-      
-      // Rediriger vers la page de création de conférence après avoir arrêté la diffusion
-      alert("La conférence a été terminée avec succès. Les participants ont été notifiés.");
-      navigate('/conference');
     } catch (error) {
-      console.error("Erreur lors de l'arrêt de la diffusion:", error);
-      
-      // Arrêt local même en cas d'erreur
-      stopMicrophone();
-      stopCamera();
-      setIsBroadcasting(false);
-      setStoppingConference(false);
-      
-      // Rediriger vers la page de création même en cas d'erreur
-      alert("La conférence a été terminée. Les participants ont été notifiés.");
-      navigate('/conference/create');
+      console.error("❌ Erreur complète lors de la configuration de l'enregistrement:", error);
+      alert(`Erreur lors de l'enregistrement: ${error.message}`);
     }
   };
   
+  // Ajoutez cette fonction pour calculer la durée
+  const calculateDuration = () => {
+    if (!streamStartTime) return 0;
+    const now = new Date();
+    return Math.floor((now - streamStartTime) / 1000); // Durée en secondes
+  };
+  
+  // Arrêter la diffusion
+  // Arrêter la diffusion
+const stopBroadcasting = async () => {
+  setStoppingConference(true);
+  
+  try {
+    // Ajouter des logs pour déboguer
+    console.log("🔵 Début de l'arrêt de la diffusion");
+    
+    // Arrêter l'enregistrement
+    if (mediaRecorderRef.current && recording) {
+      console.log("🔵 Arrêt de l'enregistreur de médias");
+      mediaRecorderRef.current.stop();
+      setRecording(false);
+    }
+    
+    // Calculer la durée totale
+    const totalDuration = calculateDuration();
+    console.log(`🔵 Durée totale de la conférence: ${totalDuration} secondes`);
+    
+    // Préparer les données d'enregistrement
+    const recordingData = {
+      title,
+      duration: totalDuration,
+      hasVideo: videoEnabled,
+      sourceLanguage,
+      targetLanguages,
+      participants: participantsList.map(p => ({
+        id: p.id,
+        name: p.name,
+        language: p.language,
+        joinTime: p.joinTime
+      }))
+    };
+    
+    // Si l'enregistrement est activé, ajouter le PIN
+    if (recordConference && pin) {
+      console.log("🔵 Préparation de l'enregistrement avec PIN:", pin);
+      recordingData.pin = pin;
+      recordingData.email = email;
+      
+      // Envoyer les données à l'API pour l'enregistrement complet
+      console.log("🔵 Envoi des données d'enregistrement à l'API:", recordingData);
+      const response = await axios.post(`${API_BASE_URL}/conferences/${conferenceId}/record`, recordingData);
+      console.log("🔵 Réponse de l'API d'enregistrement:", response.data);
+    } else {
+      console.log("🔵 L'enregistrement n'est pas activé, aucune donnée d'enregistrement ne sera envoyée");
+    }
+    
+    // Fermer toutes les connexions WebRTC
+    console.log("🔵 Fermeture des connexions WebRTC");
+    Object.keys(peerConnectionsRef.current).forEach(participantId => {
+      if (peerConnectionsRef.current[participantId]) {
+        peerConnectionsRef.current[participantId].close();
+        console.log(`🔵 Connexion fermée pour ${participantId}`);
+      }
+    });
+    
+    // Vider les références
+    peerConnectionsRef.current = {};
+    setPeerConnections({});
+    
+    // Arrêter la conférence sur le serveur
+    if (conferenceId) {
+      console.log("🔵 Demande d'arrêt de la conférence sur le serveur");
+      await axios.post(`${API_BASE_URL}/conferences/${conferenceId}/stop`, {
+        // Ajouter ce paramètre pour indiquer si on veut enregistrer ou non
+        shouldRecord: recordConference
+      });
+    }
+    
+    // Fermer la connexion WebSocket
+    if (wsRef.current) {
+      console.log("🔵 Fermeture de la WebSocket");
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+    
+    // Arrêter les périphériques
+    console.log("🔵 Arrêt des périphériques audio/vidéo");
+    stopMicrophone();
+    stopCamera();
+    
+    // Mise à jour de l'état
+    setIsBroadcasting(false);
+    setStoppingConference(false);
+    
+    console.log("🟢 La diffusion a été arrêtée avec succès");
+    
+    // Rediriger vers la page de création de conférence après avoir arrêté la diffusion
+    alert("La conférence a été terminée avec succès. Les participants ont été notifiés.");
+    navigate('/conference');
+  } catch (error) {
+    console.error("❌ Erreur lors de l'arrêt de la diffusion:", error);
+    
+    // Arrêt local même en cas d'erreur
+    stopMicrophone();
+    stopCamera();
+    setIsBroadcasting(false);
+    setStoppingConference(false);
+    
+    // Rediriger vers la page de création même en cas d'erreur
+    alert("La conférence a été terminée. Les participants ont été notifiés.");
+    navigate('/conference/create');
+  }
+};
+  const startRecording = () => {
+    if (!micStreamRef.current) {
+      console.error("❌ Pas de flux audio disponible pour l'enregistrement");
+      return false;
+    }
+    
+    try {
+      console.log("🔵 Démarrage de l'enregistrement des médias");
+      
+      // Créer un nouveau MediaStream avec toutes les pistes
+      const mediaStream = new MediaStream();
+      
+      // Ajouter les pistes audio
+      micStreamRef.current.getAudioTracks().forEach(track => {
+        mediaStream.addTrack(track);
+        console.log(`🔵 Piste audio ajoutée à l'enregistrement: ${track.id}`);
+      });
+      
+      // Ajouter les pistes vidéo si disponibles et activées
+      if (videoEnabled && videoStreamRef.current) {
+        videoStreamRef.current.getVideoTracks().forEach(track => {
+          mediaStream.addTrack(track);
+          console.log(`🔵 Piste vidéo ajoutée à l'enregistrement: ${track.id}`);
+        });
+      }
+      
+      // Options pour l'enregistreur
+      const options = {
+        mimeType: videoEnabled ? 'video/webm;codecs=vp9,opus' : 'audio/webm;codecs=opus',
+        audioBitsPerSecond: settings.audioQuality === 'high' ? 128000 : 64000,
+        videoBitsPerSecond: settings.videoQuality === 'high' ? 2500000 : 1000000
+      };
+      
+      // Créer l'enregistreur
+      const mediaRecorder = new MediaRecorder(mediaStream, options);
+      mediaRecorderRef.current = mediaRecorder;
+      
+      // Gérer les données enregistrées
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) {
+          recordedChunksRef.current.push(event.data);
+          console.log(`🔵 Nouveau chunk d'enregistrement reçu: ${event.data.size} bytes`);
+        }
+      };
+      
+      // Quand l'enregistrement est arrêté
+      mediaRecorder.onstop = async () => {
+        console.log("🔵 Enregistrement terminé, traitement des données");
+        const recordedBlob = new Blob(recordedChunksRef.current, { 
+          type: videoEnabled ? 'video/webm' : 'audio/webm' 
+        });
+        
+        console.log(`🔵 Taille totale de l'enregistrement: ${recordedBlob.size} bytes`);
+        
+        // Créer un FormData pour l'envoi
+        const formData = new FormData();
+        formData.append('conference_id', conferenceId);
+        formData.append('media_file', recordedBlob, `${conferenceId}_recording.webm`);
+        formData.append('has_video', videoEnabled.toString());
+        
+        try {
+          // Envoyer le fichier au serveur
+          console.log("🔵 Envoi du fichier média au serveur");
+          const uploadResponse = await axios.post(
+            `${API_BASE_URL}/recordings/upload`, 
+            formData,
+            { headers: { 'Content-Type': 'multipart/form-data' } }
+          );
+          
+          console.log("🟢 Téléchargement du média réussi:", uploadResponse.data);
+        } catch (uploadError) {
+          console.error("❌ Erreur lors du téléchargement du média:", uploadError);
+        }
+        
+        // Réinitialiser les chunks
+        recordedChunksRef.current = [];
+      };
+      
+      // Commencer l'enregistrement
+      mediaRecorder.start(1000); // Créer un chunk toutes les secondes
+      setRecording(true);
+      
+      console.log("🟢 Enregistrement démarré avec succès");
+      return true;
+      
+    } catch (error) {
+      console.error("❌ Erreur lors du démarrage de l'enregistrement:", error);
+      return false;
+    }
+  };
   // Confirmation avant d'arrêter la diffusion
   const confirmStopBroadcasting = () => {
     setShowEndConfirmation(true);
@@ -1023,7 +1154,7 @@ Cette conférence a mis en lumière les défis et opportunités du secteur finan
       return (
         <motion.div 
           key={i} 
-          className={`${isBroadcasting && micEnabled ? 'bg-green-500' : 'bg-gray-300'} rounded-full mx-px`}
+          className={`${isBroadcasting && !micMuted ? 'bg-green-500' : 'bg-gray-300'} rounded-full mx-px`}
           style={{ 
             height: `${height}px`,
             width: '3px'
@@ -1102,6 +1233,16 @@ Cette conférence a mis en lumière les défis et opportunités du secteur finan
             </div>
           </motion.div>
           <div className="flex items-center space-x-3">
+            {isBroadcasting && recordConference && (
+              <motion.div
+                className="px-3 py-1 rounded-full bg-red-100 text-red-800 text-sm font-medium hidden md:flex items-center"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+              >
+                <span className="w-2 h-2 bg-red-500 rounded-full mr-2 animate-pulse"></span>
+                Enregistrement
+              </motion.div>
+            )}
             {isBroadcasting && (
               <motion.div 
                 className="px-3 py-1 rounded-full bg-green-100 text-green-800 text-sm font-medium hidden md:flex items-center"
@@ -1145,43 +1286,28 @@ Cette conférence a mis en lumière les défis et opportunités du secteur finan
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           {/* Colonne de gauche - Diffusion */}
           <div className="lg:col-span-2">
-            {videoEnabled ? (
-              <motion.div 
-                className="bg-black rounded-lg overflow-hidden mb-6 aspect-video flex items-center justify-center"
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.5 }}
-              >
-                <video 
-                  ref={videoRef} 
-                  autoPlay 
-                  playsInline 
-                  muted 
-                  className="w-full h-full object-cover"
-                  onError={(e) => console.error("❌ Erreur vidéo:", e.target.error)}
-                />
-              </motion.div>
-            ) : (
-              <motion.div 
-                className="bg-gray-800 rounded-lg overflow-hidden mb-6 aspect-video flex items-center justify-center"
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.5 }}
-              >
-                <div className="text-center text-gray-400">
-                  <VideoOff size={48} className="mx-auto mb-2 opacity-50" />
-                  <p className="text-lg">Caméra désactivée</p>
-                  {isBroadcasting && (
-                    <button 
-                      onClick={toggleVideo}
-                      className="mt-4 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
-                    >
-                      Activer la caméra
-                    </button>
-                  )}
+            <motion.div 
+              className="bg-black rounded-lg overflow-hidden mb-6 aspect-video flex items-center justify-center relative"
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.5 }}
+            >
+              {/* Indicateur de caméra désactivée */}
+              {cameraPaused && videoEnabled && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center bg-black bg-opacity-90 z-10">
+                  <VideoOff size={60} className="text-white/50 mb-4" />
+                  <p className="text-white/80 text-lg">Caméra désactivée</p>
                 </div>
-              </motion.div>
-            )}
+              )}
+              <video 
+                ref={videoRef} 
+                autoPlay 
+                playsInline 
+                muted 
+                className={`w-full h-full object-cover ${cameraPaused ? 'hidden' : 'block'}`}
+                onError={(e) => console.error("❌ Erreur vidéo:", e.target.error)}
+              />
+            </motion.div>
             
             <motion.div 
               className="bg-white rounded-lg shadow-md overflow-hidden mb-6"
@@ -1197,33 +1323,33 @@ Cette conférence a mis en lumière les défis et opportunités du secteur finan
                   <div className="flex-1 min-w-[250px]">
                     <div className="flex items-center justify-between mb-2">
                       <div className="flex items-center">
-                        {micEnabled ? (
-                          <Mic size={20} className="text-gray-500 mr-2" />
+                        {micMuted ? (
+                          <MicOff size={20} className="text-red-500 mr-2" />
                         ) : (
-                          <MicOff size={20} className="text-gray-500 mr-2" />
+                          <Mic size={20} className="text-gray-500 mr-2" />
                         )}
                         <span className="text-gray-700 font-medium">Microphone</span>
                       </div>
-                      {micAccess && (
-                        <button 
-                          onClick={toggleMicrophone}
-                          className={`text-xs px-2 py-1 rounded-full ${
-                            micEnabled ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'
-                          }`}
-                        >
-                          {micEnabled ? 'Actif' : 'Désactivé'}
-                        </button>
-                      )}
                       <div className="flex h-6 items-center">
                         {generateWaveform()}
                       </div>
                     </div>
-                    <div className={`p-3 rounded-lg ${micAccess ? 'bg-green-50 text-green-700' : 'bg-yellow-50 text-yellow-700'}`}>
+                    <div className={`p-3 rounded-lg ${micAccess ? (micMuted ? 'bg-red-50 text-red-700' : 'bg-green-50 text-green-700') : 'bg-yellow-50 text-yellow-700'}`}>
                       {micAccess ? (
-                        <p className="text-sm flex items-center">
-                          <Check size={16} className="mr-2" />
-                          Microphone connecté {micEnabled ? 'et actif' : 'mais désactivé'}
-                        </p>
+                        <div className="flex justify-between items-center">
+                          <p className="text-sm flex items-center">
+                            <Check size={16} className="mr-2" />
+                            {micMuted ? "Microphone en sourdine" : "Microphone actif"}
+                          </p>
+                          {isBroadcasting && (
+                            <button 
+                              className={`px-3 py-1 text-xs rounded-full ${micMuted ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}
+                              onClick={toggleMicrophone}
+                            >
+                              {micMuted ? 'Réactiver' : 'Désactiver'}
+                            </button>
+                          )}
+                        </div>
                       ) : (
                         <p className="text-sm">
                           Cliquez sur "Démarrer la diffusion" pour connecter votre microphone
@@ -1235,26 +1361,26 @@ Cette conférence a mis en lumière les défis et opportunités du secteur finan
                   <div className="flex-1 min-w-[250px]">
                     <div className="flex items-center justify-between mb-2">
                       <div className="flex items-center">
-                        {videoEnabled ? (
-                          <Video size={20} className="text-gray-500 mr-2" />
+                        {cameraPaused ? (
+                          <VideoOff size={20} className="text-red-500 mr-2" />
                         ) : (
-                          <VideoOff size={20} className="text-gray-500 mr-2" />
+                          <Video size={20} className="text-gray-500 mr-2" />
                         )}
                         <span className="text-gray-700 font-medium">Caméra</span>
                       </div>
                       <button 
-                        className={`px-3 py-1 text-xs rounded-full ${videoEnabled ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}
+                        className={`px-3 py-1 text-xs rounded-full ${videoEnabled ? (cameraPaused ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700') : 'bg-blue-100 text-blue-700'}`}
                         onClick={toggleVideo}
                         disabled={!isBroadcasting}
                       >
-                        {videoEnabled ? 'Activée' : 'Désactivée'}
+                        {videoEnabled ? (cameraPaused ? 'Réactiver' : 'Désactiver') : 'Activer'}
                       </button>
                     </div>
-                    <div className={`p-3 rounded-lg ${cameraAccess && videoEnabled ? 'bg-green-50 text-green-700' : 'bg-yellow-50 text-yellow-700'}`}>
-                      {cameraAccess && videoEnabled ? (
+                    <div className={`p-3 rounded-lg ${cameraAccess ? (cameraPaused ? 'bg-red-50 text-red-700' : 'bg-green-50 text-green-700') : 'bg-yellow-50 text-yellow-700'}`}>
+                      {cameraAccess ? (
                         <p className="text-sm flex items-center">
                           <Check size={16} className="mr-2" />
-                          Caméra connectée et active
+                          {cameraPaused ? "Caméra désactivée" : "Caméra active"}
                         </p>
                       ) : (
                         <p className="text-sm">
@@ -1284,6 +1410,12 @@ Cette conférence a mis en lumière les défis et opportunités du secteur finan
                         <span>Langues disponibles</span>
                         <span className="font-mono">{targetLanguages.length}</span>
                       </li>
+                      {recordConference && (
+                        <li className="flex justify-between text-red-700">
+                          <span>Enregistrement</span>
+                          <span className="font-mono">Activé</span>
+                        </li>
+                      )}
                     </ul>
                     <div className="mt-4 pt-4 border-t">
                       <button 
@@ -1480,7 +1612,7 @@ Cette conférence a mis en lumière les défis et opportunités du secteur finan
           transition={{ type: "spring", stiffness: 300, damping: 30 }}
         >
           <div className="bg-blue-500 p-4 text-white flex justify-between items-center">
-            <h3 className="font-bold">Chat de la conférence</h3>
+          <h3 className="font-bold">Chat de la conférence</h3>
             <button 
               className="text-white/80 hover:text-white"
               onClick={() => setShowChat(false)}
@@ -1756,7 +1888,10 @@ Cette conférence a mis en lumière les défis et opportunités du secteur finan
           <div className="flex justify-end gap-4">
             <button 
               className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors"
-              onClick={() => setShowEndConfirmation(false)}
+              onClick={() => {
+                setShowRecordModal(false);
+                setRecordConference(false);
+              }}
             >
               Annuler
             </button>
@@ -1768,6 +1903,106 @@ Cette conférence a mis en lumière les défis et opportunités du secteur finan
               }}
             >
               Terminer la conférence
+            </button>
+          </div>
+        </motion.div>
+      </motion.div>
+    )}
+    
+    {/* Modal d'enregistrement */}
+    {showRecordModal && (
+      <motion.div 
+        className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4"
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+      >
+        <motion.div 
+          className="bg-white rounded-xl p-6 max-w-md w-full"
+          initial={{ scale: 0.9, y: 20 }}
+          animate={{ scale: 1, y: 0 }}
+          exit={{ scale: 0.9, y: 20 }}
+          onClick={e => e.stopPropagation()}
+        >
+          <div className="flex items-center mb-4 text-blue-500">
+            <Save size={24} className="mr-2" />
+            <h3 className="text-xl font-bold">Enregistrer la conférence</h3>
+          </div>
+          
+          <div className="mb-4">
+            <label className="flex items-center mb-4">
+              <input
+                type="checkbox"
+                checked={recordConference}
+                onChange={(e) => setRecordConference(e.target.checked)}
+                className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+              />
+              <span className="ml-2 block text-sm text-gray-700">
+                Je souhaite enregistrer cette conférence pour un accès ultérieur
+              </span>
+            </label>
+            
+            {recordConference && (
+              <div className="bg-blue-50 p-4 rounded-lg">
+                <p className="text-sm text-gray-700 mb-4">
+                  Pour protéger votre enregistrement, veuillez définir un code PIN et fournir une adresse email (optionnel) pour récupérer l'accès en cas d'oubli.
+                </p>
+                
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Code PIN (4-6 chiffres)
+                    </label>
+                    <input 
+                      type="password"
+                      value={pin}
+                      onChange={(e) => setPin(e.target.value)}
+                      pattern="[0-9]*"
+                      inputMode="numeric"
+                      maxLength={6}
+                      placeholder="Entrez un code PIN (ex: 123456)"
+                      className="w-full p-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+                    />
+                    {pinError && (
+                      <p className="mt-1 text-xs text-red-500">{pinError}</p>
+                    )}
+                  </div>
+                  
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Email de récupération (optionnel)
+                    </label>
+                    <input 
+                      type="email"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      placeholder="Entrez une adresse email"
+                      className="w-full p-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+                    />
+                    <p className="mt-1 text-xs text-gray-500">
+                      En cas d'oubli du PIN, cet email vous permettra de récupérer l'accès à l'enregistrement.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+          
+          <div className="flex justify-end gap-4">
+            <button 
+              className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors"
+              onClick={() => {
+                setShowRecordModal(false);
+                setRecordConference(false);
+              }}
+            >
+              Annuler
+            </button>
+            <button 
+              className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
+              onClick={saveRecordingDetails}
+            >
+              Confirmer
             </button>
           </div>
         </motion.div>
@@ -1864,34 +2099,6 @@ Cette conférence a mis en lumière les défis et opportunités du secteur finan
               />
               <label htmlFor="normalize_speech" className="ml-2 block text-sm text-gray-900">
                 Normaliser le débit de parole
-              </label>
-            </div>
-            
-            <div className="flex items-center">
-              <input 
-                type="checkbox" 
-                id="allow_replay" 
-                checked={settings.allowReplay}
-                onChange={(e) => handleSettingChange('allowReplay', e.target.checked)}
-                disabled={isBroadcasting}
-                className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
-              />
-              <label htmlFor="allow_replay" className="ml-2 block text-sm text-gray-900">
-                Permettre aux participants de revenir en arrière
-              </label>
-            </div>
-            
-            <div className="flex items-center">
-              <input 
-                type="checkbox" 
-                id="allow_download" 
-                checked={settings.allowDownload}
-                onChange={(e) => handleSettingChange('allowDownload', e.target.checked)}
-                disabled={isBroadcasting}
-                className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
-              />
-              <label htmlFor="allow_download" className="ml-2 block text-sm text-gray-900">
-                Permettre aux participants de télécharger l'audio traduit
               </label>
             </div>
             

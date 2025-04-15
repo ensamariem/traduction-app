@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { ChevronLeft, Globe, Settings } from 'lucide-react';
+import { ChevronLeft, Globe, Settings, Download, QrCode, X, Copy, AlertCircle } from 'lucide-react';
 import { Link, useNavigate } from 'react-router-dom';
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
+import { QRCodeCanvas } from 'qrcode.react';
 import axios from 'axios';
 
 const ConferenceCreateScreen = () => {
@@ -13,7 +14,9 @@ const ConferenceCreateScreen = () => {
   const [availableLanguages, setAvailableLanguages] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [showSettings, setShowSettings] = useState(false);
+  const [showQRModal, setShowQRModal] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [titleError, setTitleError] = useState('');
   const [settings, setSettings] = useState({
     audioQuality: 'medium',
     videoQuality: 'medium',
@@ -97,16 +100,65 @@ const ConferenceCreateScreen = () => {
     }));
   };
   
-  // Démarrer la diffusion
-  // Dans startConference() dans ConferenceCreateScreen.js
-const startConference = async () => {
+  // Copier le lien dans le presse-papier
+  const copyLinkToClipboard = () => {
+    const url = `${window.location.origin}/conference/join/${conferenceId}`;
+    navigator.clipboard.writeText(url)
+      .then(() => {
+        alert("Lien copié dans le presse-papier !");
+      })
+      .catch(err => {
+        console.error("Impossible de copier le lien:", err);
+      });
+  };
+  
+  // Télécharger le QR code
+  const downloadQRCode = () => {
+    const canvas = document.getElementById('conference-qr-code');
+    if (canvas) {
+      const url = canvas.toDataURL('image/png');
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `conference-${conferenceId}.png`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    }
+  };
+  
+  // Vérifier si le titre existe déjà
+  const checkTitleExists = async (title) => {
+    try {
+      const response = await axios.get(`${API_BASE_URL}/conferences/check-title?title=${encodeURIComponent(title)}`);
+      return response.data && response.data.exists;
+    } catch (error) {
+      console.error("Erreur lors de la vérification du titre:", error);
+      // En cas d'erreur, supposer que le titre n'existe pas pour permettre à l'utilisateur de continuer
+      return false;
+    }
+  };
+  
+  // Démarrer la conférence
+  const startConference = async () => {
     if (!title) {
-      alert("Veuillez ajouter un titre à votre conférence");
+      setTitleError("Veuillez ajouter un titre à votre conférence");
       return;
     }
     
     try {
       setIsSubmitting(true);
+      
+      // Vérifier si le titre existe déjà
+      const titleExists = await checkTitleExists(title);
+      
+      if (titleExists) {
+        setTitleError("Ce titre de conférence existe déjà. Veuillez en choisir un autre.");
+        setIsSubmitting(false);
+        return;
+      }
+      
+      // Réinitialiser l'erreur de titre
+      setTitleError('');
       
       // Sauvegarder les informations de la conférence
       const conferenceData = {
@@ -126,7 +178,7 @@ const startConference = async () => {
         // Stocker les données de la conférence localement
         localStorage.setItem('conferenceData', JSON.stringify(conferenceData));
         
-        // Rediriger vers la page de diffusion - UTILISER SIMPLEMENT navigate sans localStorage
+        // Rediriger vers la page de diffusion
         navigate(`/conference/broadcast/${conferenceId}`);
       } else {
         alert("Erreur lors de la création de la conférence. Veuillez réessayer.");
@@ -136,6 +188,15 @@ const startConference = async () => {
       alert("Erreur lors de la création de la conférence. Veuillez réessayer.");
     } finally {
       setIsSubmitting(false);
+    }
+  };
+  
+  // Gérer le changement de titre
+  const handleTitleChange = (e) => {
+    setTitle(e.target.value);
+    // Effacer le message d'erreur lorsque l'utilisateur modifie le titre
+    if (titleError) {
+      setTitleError('');
     }
   };
   
@@ -178,131 +239,234 @@ const startConference = async () => {
         </div>
       </header>
       
-      <main className="flex-grow max-w-6xl mx-auto px-4 py-8">
-        <motion.div 
-          className="bg-white rounded-lg shadow-md overflow-hidden mb-6 max-w-2xl mx-auto"
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.5 }}
-        >
-          <div className="bg-gradient-to-r from-blue-50 to-blue-100 px-4 py-3 border-b">
-            <h2 className="font-semibold text-blue-700">Détails de la conférence</h2>
-          </div>
-          <div className="p-6">
-            <div className="mb-4">
-              <label htmlFor="conference-title" className="block text-sm font-medium text-gray-700 mb-1">
-                Titre de la conférence*
-              </label>
-              <input 
-                type="text" 
-                id="conference-title" 
-                value={title} 
-                onChange={(e) => setTitle(e.target.value)} 
-                placeholder="Ex: Réunion de la Bourse de Casablanca"
-                className="w-full p-3 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
-              />
-              {!title && (
-                <p className="text-xs text-red-500 mt-1">
-                  Veuillez saisir un titre pour votre conférence
-                </p>
-              )}
+      <main className="flex-grow max-w-6xl mx-auto px-4 py-6">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          {/* Détails de la conférence - 2/3 de la largeur */}
+          <motion.div 
+            className="bg-white rounded-lg shadow-md overflow-hidden lg:col-span-2 h-auto"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.5 }}
+          >
+            <div className="bg-gradient-to-r from-blue-50 to-blue-100 px-4 py-3 border-b">
+              <h2 className="font-semibold text-blue-700">Détails de la conférence</h2>
             </div>
-            
-            <div className="mb-4">
-              <label htmlFor="conference-id" className="block text-sm font-medium text-gray-700 mb-1">
-                Identifiant unique
-              </label>
-              <input 
-                type="text" 
-                id="conference-id" 
-                value={conferenceId} 
-                className="w-full p-3 border border-gray-300 rounded-lg bg-gray-50 focus:ring-blue-500 focus:border-blue-500"
-                readOnly
-              />
-              <p className="text-xs text-gray-500 mt-1">
-                Cet identifiant permettra aux participants de rejoindre votre conférence
-              </p>
-            </div>
-            
-            <div className="mb-4">
-              <label htmlFor="source-language" className="block text-sm font-medium text-gray-700 mb-1">
-                Langue du conférencier
-              </label>
-              <select 
-                id="source-language" 
-                value={sourceLanguage} 
-                onChange={(e) => setSourceLanguage(e.target.value)}
-                className="w-full p-3 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
-              >
-                {availableLanguages.map(lang => (
-                  <option key={lang} value={lang}>{lang}</option>
-                ))}
-              </select>
-            </div>
-            
-            <div className="mb-6">
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Langues de traduction disponibles
-              </label>
-              <div className="flex flex-wrap gap-2 mb-3">
-                {targetLanguages.map(lang => (
-                  <div 
-                    key={lang}
-                    className="bg-blue-100 text-blue-700 px-3 py-1 rounded-full text-sm flex items-center"
-                  >
-                    {lang}
+            <div className="p-5">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label htmlFor="conference-title" className="block text-sm font-medium text-gray-700 mb-1">
+                    Titre de la conférence*
+                  </label>
+                  <input 
+                    type="text" 
+                    id="conference-title" 
+                    value={title} 
+                    onChange={handleTitleChange} 
+                    placeholder="Ex: Réunion de la Bourse de Casablanca"
+                    className={`w-full p-2 border ${titleError ? 'border-red-500' : 'border-gray-300'} rounded-lg focus:ring-blue-500 focus:border-blue-500`}
+                  />
+                  {(!title || titleError) && (
+                    <div className="flex items-center mt-1 text-xs text-red-500">
+                      {titleError ? <AlertCircle size={12} className="mr-1" /> : null}
+                      <p>{titleError || (!title ? "Veuillez saisir un titre" : "")}</p>
+                    </div>
+                  )}
+                </div>
+                
+                <div>
+                  <label htmlFor="conference-id" className="block text-sm font-medium text-gray-700 mb-1">
+                    Identifiant unique
+                  </label>
+                  <div className="flex">
+                    <input 
+                      type="text" 
+                      id="conference-id" 
+                      value={conferenceId} 
+                      className="w-full p-2 border border-gray-300 rounded-l-lg bg-gray-50 focus:ring-blue-500 focus:border-blue-500"
+                      readOnly
+                    />
                     <button 
-                      className="ml-2 text-blue-500 hover:text-blue-700 focus:outline-none"
-                      onClick={() => handleRemoveLanguage(lang)}
+                      className="bg-blue-100 hover:bg-blue-200 text-blue-600 p-2 rounded-r-lg transition-colors flex items-center"
+                      onClick={copyLinkToClipboard}
                     >
-                      &times;
+                      <Copy size={18} />
                     </button>
                   </div>
-                ))}
+                </div>
               </div>
-              <select 
-                className="w-full p-3 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
-                onChange={(e) => {
-                  if (e.target.value) {
-                    handleAddLanguage(e.target.value);
-                    e.target.value = '';
-                  }
-                }}
-              >
-                <option value="">Ajouter une langue...</option>
-                {availableLanguages
-                  .filter(lang => !targetLanguages.includes(lang) && lang !== sourceLanguage)
-                  .map(lang => (
-                    <option key={lang} value={lang}>{lang}</option>
-                ))}
-              </select>
-              <p className="text-xs text-gray-500 mt-1">
-                Sélectionnez les langues dans lesquelles la conférence sera traduite
-              </p>
+              
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
+                <div>
+                  <label htmlFor="source-language" className="block text-sm font-medium text-gray-700 mb-1">
+                    Langue du conférencier
+                  </label>
+                  <select 
+                    id="source-language" 
+                    value={sourceLanguage} 
+                    onChange={(e) => setSourceLanguage(e.target.value)}
+                    className="w-full p-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+                  >
+                    {availableLanguages.map(lang => (
+                      <option key={lang} value={lang}>{lang}</option>
+                    ))}
+                  </select>
+                </div>
+                
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Ajouter une langue de traduction
+                  </label>
+                  <select 
+                    className="w-full p-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+                    onChange={(e) => {
+                      if (e.target.value) {
+                        handleAddLanguage(e.target.value);
+                        e.target.value = '';
+                      }
+                    }}
+                  >
+                    <option value="">Sélectionner une langue...</option>
+                    {availableLanguages
+                      .filter(lang => !targetLanguages.includes(lang) && lang !== sourceLanguage)
+                      .map(lang => (
+                        <option key={lang} value={lang}>{lang}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              
+              <div className="mt-4">
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Langues de traduction disponibles
+                </label>
+                <div className="flex flex-wrap gap-2 mb-2 min-h-[32px]">
+                  {targetLanguages.map(lang => (
+                    <div 
+                      key={lang}
+                      className="bg-blue-100 text-blue-700 px-2 py-1 rounded-full text-sm flex items-center"
+                    >
+                      {lang}
+                      <button 
+                        className="ml-1 text-blue-500 hover:text-blue-700 focus:outline-none"
+                        onClick={() => handleRemoveLanguage(lang)}
+                      >
+                        &times;
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              
+              <div className="pt-4 mt-4 border-t">
+                <button 
+                  className="w-full px-4 py-2 bg-blue-500 text-white rounded-lg font-medium hover:bg-blue-600 transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed"
+                  onClick={startConference}
+                  disabled={isLoading || !title || isSubmitting}
+                >
+                  {isLoading ? "Chargement..." : isSubmitting ? "Création en cours..." : "Démarrer la conférence"}
+                </button>
+              </div>
             </div>
-            
-            <div className="pt-4 border-t">
-              <button 
-                className="w-full px-4 py-3 bg-blue-500 text-white rounded-lg font-medium hover:bg-blue-600 transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed"
-                onClick={startConference}
-                disabled={isLoading || !title || isSubmitting}
-              >
-                {isLoading ? "Chargement..." : isSubmitting ? "Création en cours..." : "Démarrer la conférence"}
-              </button>
-              <p className="text-xs text-center text-gray-500 mt-2">
-                En démarrant la conférence, vous pourrez partager votre audio et vidéo
-              </p>
+          </motion.div>
+          
+          {/* QR Code section - 1/3 de la largeur */}
+          <motion.div 
+            className="flex flex-col bg-white rounded-lg shadow-md overflow-hidden h-auto"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.5, delay: 0.2 }}
+          >
+            <div className="bg-gradient-to-r from-purple-50 to-purple-100 px-4 py-3 border-b">
+              <h2 className="font-semibold text-purple-700">QR Code d'accès</h2>
             </div>
-          </div>
-        </motion.div>
+            <div className="p-5 flex flex-col items-center flex-grow justify-center">
+              <div className="bg-white p-3 rounded-lg shadow-sm mb-3">
+                <QRCodeCanvas 
+                  id="conference-qr-code"
+                  value={`${window.location.origin}/conference/join/${conferenceId}`}
+                  size={160}
+                  level="H"
+                  includeMargin={true}
+                />
+              </div>
+              <p className="text-center text-sm text-gray-600 mb-3">
+                Les participants pourront scanner ce QR code pour rejoindre
+              </p>
+              <div className="flex gap-2 w-full">
+                <button 
+                  className="flex-1 flex items-center justify-center gap-1 px-3 py-2 bg-purple-100 text-purple-700 rounded-lg hover:bg-purple-200 transition-colors text-sm"
+                  onClick={downloadQRCode}
+                >
+                  <Download size={14} />
+                  <span>Télécharger</span>
+                </button>
+                <button 
+                  className="flex-1 flex items-center justify-center gap-1 px-3 py-2 bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200 transition-colors text-sm"
+                  onClick={() => setShowQRModal(true)}
+                >
+                  <QrCode size={14} />
+                  <span>Agrandir</span>
+                </button>
+              </div>
+            </div>
+          </motion.div>
+        </div>
       </main>
+      
+      {/* Modal pour QR code plein écran */}
+      {showQRModal && (
+        <motion.div 
+          className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          onClick={() => setShowQRModal(false)}
+        >
+          <motion.div 
+            className="bg-white rounded-xl p-8 max-w-md w-full flex flex-col items-center"
+            initial={{ scale: 0.9, y: 20 }}
+            animate={{ scale: 1, y: 0 }}
+            exit={{ scale: 0.9, y: 20 }}
+            onClick={e => e.stopPropagation()}
+          >
+            <h3 className="text-xl font-bold mb-2">QR Code de la conférence</h3>
+            <p className="text-gray-600 text-center mb-6">
+              {title || "Nouvelle conférence"} - {conferenceId}
+            </p>
+            <div className="bg-white p-4 rounded-lg shadow-sm mb-6">
+              <QRCodeCanvas 
+                value={`${window.location.origin}/conference/join/${conferenceId}`}
+                size={250}
+                level="H"
+                includeMargin={true}
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-4 w-full">
+              <button 
+                className="flex items-center justify-center gap-2 px-4 py-3 bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200 transition-colors"
+                onClick={downloadQRCode}
+              >
+                <Download size={18} />
+                <span>Télécharger</span>
+              </button>
+              <button 
+                className="flex items-center justify-center gap-2 px-4 py-3 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors"
+                onClick={() => setShowQRModal(false)}
+              >
+                <X size={18} />
+                <span>Fermer</span>
+              </button>
+            </div>
+          </motion.div>
+        </motion.div>
+      )}
       
       {/* Settings Modal */}
       {showSettings && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-xl p-6 max-w-lg w-full">
             <div className="flex justify-between items-center mb-4">
-            <h3 className="text-xl font-bold">Paramètres avancés</h3>
+              <h3 className="text-xl font-bold">Paramètres avancés</h3>
               <button 
                 className="text-gray-400 hover:text-gray-600"
                 onClick={() => setShowSettings(false)}
@@ -369,7 +533,7 @@ const startConference = async () => {
       )}
       
       {/* Footer */}
-      <footer className="bg-gray-800 text-white py-4 mt-auto">
+      <footer className="bg-gray-800 text-white py-3 mt-auto">
         <div className="max-w-6xl mx-auto px-4">
           <div className="flex justify-between items-center">
             <div className="flex items-center">
